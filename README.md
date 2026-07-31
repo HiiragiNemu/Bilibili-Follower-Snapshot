@@ -34,7 +34,7 @@ allow pasting
 
 按 Enter 后再粘贴脚本。
 
-无法直接下载 `.js` 时，可使用内容完全相同的 [`bilibili_follower_snapshot_public.txt`](./bilibili_follower_snapshot_public.txt)。
+无法直接下载 `.js` 时，可使用内容完全相同的 [`bilibili_follower_snapshot_public.txt`](./bilibili_follower_snapshot_public.txt)。需要下载整个项目包时，点击仓库页面的 **Code → Download ZIP**。
 
 ## 追踪后续取关或关系变化
 
@@ -83,7 +83,6 @@ allow pasting
 - `bilibili_follower_snapshot_public.js`：公开版完整脚本。
 - `bilibili_follower_snapshot_public.txt`：同内容 TXT 备用版。
 - `docs/bilibili-post-template.md`：B站发布说明范本。
-- `releases/B站粉丝快照与取关追踪工具_公开版.zip`：完整下载包。
 
 ## 隐私与安全
 
