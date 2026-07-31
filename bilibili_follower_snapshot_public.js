@@ -10,7 +10,8 @@
  * 5. 不导出 Cookie、SESSDATA、bili_jct、密码或验证码。
  *
  * 重要限制：
- * - 工具本身没有固定人数上限，但不能绕过 B站服务端的接口上限、风控或权限限制。
+ * - 当前已知 B站粉丝明细接口最多返回前 1000 名；总粉丝数可以超过 1000，
+ *   但第 1001 名之后的 UID/昵称明细无法由该接口取得。
  * - 只有当“实际取得人数 >= 接口报告总数”时，才会标记为完整。
  * - “关系已消失”可能包括主动取关、注销、封禁、拉黑、平台清理或被移除，
  *   不能一律认定为主动取关。
@@ -30,6 +31,7 @@
     retryBaseDelayMs: 900,
     noProgressPageLimit: 2,
     fallbackPageGuard: 10000,
+    knownFollowerDetailLimit: 1000,
     endpointCandidates: [
       {
         name: 'x/relation/fans',
@@ -556,6 +558,7 @@
         '读取中'
       }`,
       `实际取得唯一 UID：${report?.exportedUniqueTotal ?? state.followers.length}`,
+      `已知明细上限：${CONFIG.knownFollowerDetailLimit} 人`,
       `完整性：${
         report
           ? report.complete
@@ -1046,7 +1049,17 @@
         Number.isFinite(finalReportedTotal) &&
         state.followers.length >= finalReportedTotal;
 
-      if (!complete) {
+      const serviceDetailLimitLikelyReached =
+        Number.isFinite(finalReportedTotal) &&
+        finalReportedTotal > CONFIG.knownFollowerDetailLimit &&
+        state.followers.length >= CONFIG.knownFollowerDetailLimit &&
+        state.followers.length < finalReportedTotal;
+
+      if (serviceDetailLimitLikelyReached) {
+        state.warnings.push(
+          `接口报告共有 ${finalReportedTotal} 名粉丝，但当前已知粉丝明细接口最多返回前 ${CONFIG.knownFollowerDetailLimit} 名。第 ${CONFIG.knownFollowerDetailLimit + 1} 名之后的 UID、昵称和关注时间无法通过该接口导出。`
+        );
+      } else if (!complete) {
         state.warnings.push(
           '实际取得人数少于接口报告总数。可能原因包括服务端展示上限、风控、权限限制、接口变化或导出期间关系发生变化。'
         );
@@ -1054,7 +1067,7 @@
 
       state.report = {
         reportType: 'bilibili-current-follower-snapshot',
-        reportVersion: 'public-2026-08-01-v1',
+        reportVersion: 'public-2026-08-01-v1.1',
         generatedAt: new Date().toISOString(),
         generatedAtLocal: new Date().toString(),
         targetUid: state.login.uid,
@@ -1062,6 +1075,8 @@
         initialReportedTotal: initialTotal,
         listEndpointReportedTotal,
         finalReportedTotal,
+        knownFollowerDetailLimit: CONFIG.knownFollowerDetailLimit,
+        serviceDetailLimitLikelyReached,
         exportedUniqueTotal: state.followers.length,
         complete,
         pageSize: CONFIG.pageSize,
@@ -1092,6 +1107,14 @@
           `读取完成：${state.followers.length} 人。\n` +
           '结果通过总数完整性校验，可以保存。',
           'success'
+        );
+      } else if (serviceDetailLimitLikelyReached) {
+        setStatus(
+          `读取结束：接口总数 ${finalReportedTotal}，` +
+          `仅取得前 ${state.followers.length} 人。\n` +
+          `B站当前粉丝明细接口的已知上限为 ${CONFIG.knownFollowerDetailLimit} 人，` +
+          `因此无法导出第 ${CONFIG.knownFollowerDetailLimit + 1} 名之后的账号明细。`,
+          'warning'
         );
       } else {
         setStatus(
