@@ -764,10 +764,13 @@
   });
 
   ui.loadBaseline.addEventListener('change', async (event) => {
-    const file = event.target.files?.[0];
-    if (!file || !state.report) return;
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file) return;
 
     try {
+      if (!state.report) return;
+
       const oldReport = JSON.parse(await file.text());
 
       const oldList = Array.isArray(oldReport?.followers)
@@ -855,7 +858,7 @@
       setStatus(`旧快照读取失败：${error.message}`, 'error');
       log(`旧快照读取失败：${error.stack || error.message}`, 'error');
     } finally {
-      event.target.value = '';
+      input.value = '';
     }
   });
 
