@@ -12,7 +12,8 @@
  * 重要限制：
  * - 当前已知 B站粉丝明细接口最多返回前 1000 名；总粉丝数可以超过 1000，
  *   但第 1001 名之后的 UID/昵称明细无法由该接口取得。
- * - 只有当“实际取得人数 >= 接口报告总数”时，才会标记为完整。
+ * - 只有扫描前、名单接口、扫描后三个总数一致，且唯一 UID 数精确等于
+ *   该总数时，才会标记为完整并开放快照比较。
  * - “关系已消失”可能包括主动取关、注销、封禁、拉黑、平台清理或被移除，
  *   不能一律认定为主动取关。
  *
@@ -172,6 +173,206 @@
         item?.vip?.vipStatus ??
         item?.vipStatus ??
         null
+    };
+  }
+
+  function evaluateSnapshotCompleteness({
+    initialReportedTotal,
+    listEndpointReportedTotal,
+    finalReportedTotal,
+    exportedUniqueTotal
+  }) {
+    const reportedTotals = [
+      initialReportedTotal,
+      listEndpointReportedTotal,
+      finalReportedTotal
+    ];
+    const reportedTotalsConsistent =
+      reportedTotals.every(
+        (value) => Number.isSafeInteger(value) && value >= 0
+      ) && reportedTotals.every((value) => value === reportedTotals[0]);
+    const exportedCountValid =
+      Number.isSafeInteger(exportedUniqueTotal) && exportedUniqueTotal >= 0;
+
+    return {
+      reportedTotalsConsistent,
+      complete:
+        reportedTotalsConsistent &&
+        exportedCountValid &&
+        exportedUniqueTotal === finalReportedTotal
+    };
+  }
+
+  function validateSnapshotForComparison(report, label) {
+    if (!report || typeof report !== 'object' || Array.isArray(report)) {
+      throw new Error(`${label}快照不是有效的 JSON 对象。`);
+    }
+
+    const sourceField = Array.isArray(report.followers)
+      ? 'followers'
+      : Array.isArray(report.currentFollowers)
+        ? 'currentFollowers'
+        : null;
+
+    if (!sourceField) {
+      throw new Error(`${label}快照中没有 followers 数组。`);
+    }
+
+    if (report.complete !== true) {
+      const actual = report.exportedUniqueTotal ?? report[sourceField].length;
+      const reported = report.finalReportedTotal ?? '未知';
+      throw new Error(
+        `${label}快照不完整（实际 ${actual} / 报告 ${reported}），` +
+        '已停止比较，避免把未返回的粉丝误判为关系消失。'
+      );
+    }
+
+    const targetUid = normalizeUid(report.targetUid);
+    if (!targetUid) {
+      throw new Error(`${label}快照缺少有效的 targetUid。`);
+    }
+
+    const rawList = report[sourceField];
+    const normalizedItems = rawList.map(normalizeFollower);
+
+    if (normalizedItems.some((item) => !item)) {
+      throw new Error(`${label}快照包含无效的粉丝 UID。`);
+    }
+
+    const followers = uniqueByUid(normalizedItems);
+    if (followers.length !== rawList.length) {
+      throw new Error(
+        `${label}快照的粉丝 UID 存在重复：数组 ${rawList.length} 项，` +
+        `唯一 UID ${followers.length} 个。`
+      );
+    }
+
+    const requiredCountFields = [
+      sourceField === 'currentFollowers'
+        ? 'currentFollowerCount'
+        : 'exportedUniqueTotal',
+      'finalReportedTotal'
+    ];
+    const optionalCountFields = [
+      'initialReportedTotal',
+      'listEndpointReportedTotal',
+      'reportedTotalForCoverage'
+    ];
+
+    for (const field of requiredCountFields) {
+      const value = report[field];
+      if (!Number.isSafeInteger(value) || value < 0) {
+        throw new Error(`${label}快照缺少有效的 ${field}。`);
+      }
+      if (value !== followers.length) {
+        throw new Error(
+          `${label}快照计数不一致：${field}=${value}，` +
+          `唯一 UID=${followers.length}。`
+        );
+      }
+    }
+
+    for (const field of optionalCountFields) {
+      if (report[field] == null) continue;
+      const value = report[field];
+      if (!Number.isSafeInteger(value) || value < 0) {
+        throw new Error(`${label}快照的 ${field} 不是有效计数。`);
+      }
+      if (value !== followers.length) {
+        throw new Error(
+          `${label}快照计数不一致：${field}=${value}，` +
+          `唯一 UID=${followers.length}。`
+        );
+      }
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(
+        report,
+        'listEndpointReportedTotals'
+      )
+    ) {
+      const values = report.listEndpointReportedTotals;
+      if (!Array.isArray(values) || values.length === 0) {
+        throw new Error(
+          `${label}快照的 listEndpointReportedTotals 不是非空数组。`
+        );
+      }
+      for (const [index, value] of values.entries()) {
+        if (!Number.isSafeInteger(value) || value < 0) {
+          throw new Error(
+            `${label}快照的 listEndpointReportedTotals[${index}] ` +
+            '不是有效计数。'
+          );
+        }
+        if (value !== followers.length) {
+          throw new Error(
+            `${label}快照计数不一致：` +
+            `listEndpointReportedTotals[${index}]=${value}，` +
+            `唯一 UID=${followers.length}。`
+          );
+        }
+      }
+    }
+
+    if (report.integrity != null) {
+      if (
+        typeof report.integrity !== 'object' ||
+        Array.isArray(report.integrity)
+      ) {
+        throw new Error(`${label}快照的 integrity 不是有效对象。`);
+      }
+      const integrityCountFields = [
+        'unifiedReportedTotal'
+      ];
+      for (const field of integrityCountFields) {
+        if (report.integrity[field] == null) continue;
+        const value = report.integrity[field];
+        if (!Number.isSafeInteger(value) || value < 0) {
+          throw new Error(`${label}快照的 integrity.${field} 不是有效计数。`);
+        }
+        if (value !== followers.length) {
+          throw new Error(
+            `${label}快照计数不一致：integrity.${field}=${value}，` +
+            `唯一 UID=${followers.length}。`
+          );
+        }
+      }
+      const requiredTrueWhenPresent = [
+        'scanWindowCountStable',
+        'listEndpointTotalsStable',
+        'listTotalsAgreeWithStat',
+        'exactUniqueTotal',
+        'uniqueCoverage'
+      ];
+      for (const field of requiredTrueWhenPresent) {
+        if (
+          Object.prototype.hasOwnProperty.call(report.integrity, field) &&
+          report.integrity[field] !== true
+        ) {
+          throw new Error(
+            `${label}快照的 integrity.${field} 未通过完整性校验。`
+          );
+        }
+      }
+      if (report.integrity.overCoverage === true) {
+        throw new Error(`${label}快照声明存在 overCoverage。`);
+      }
+      if (report.integrity.underCoverage === true) {
+        throw new Error(`${label}快照声明存在 underCoverage。`);
+      }
+    }
+
+    return {
+      targetUid,
+      followers,
+      reportedTotal: report.finalReportedTotal,
+      exportedUniqueTotal:
+        report[
+          sourceField === 'currentFollowers'
+            ? 'currentFollowerCount'
+            : 'exportedUniqueTotal'
+        ]
     };
   }
 
@@ -413,7 +614,8 @@
           background: #d63c5e;
         }
 
-        button:disabled {
+        button:disabled,
+        .file-label.disabled {
           opacity: .45;
           cursor: not-allowed;
         }
@@ -455,13 +657,18 @@
           <button id="saveJson" disabled>保存 JSON</button>
           <button id="saveCsv" disabled>保存 CSV</button>
 
-          <label class="file-label secondary" for="loadBaseline">
+          <label
+            id="loadBaselineLabel"
+            class="file-label secondary disabled"
+            for="loadBaseline"
+          >
             导入旧快照
           </label>
           <input
             id="loadBaseline"
             type="file"
             accept=".json,application/json"
+            disabled
           >
 
           <button id="saveCompareJson" class="secondary" disabled>
@@ -499,6 +706,7 @@
       saveJson: root.getElementById('saveJson'),
       saveCsv: root.getElementById('saveCsv'),
       loadBaseline: root.getElementById('loadBaseline'),
+      loadBaselineLabel: root.getElementById('loadBaselineLabel'),
       saveCompareJson: root.getElementById('saveCompareJson'),
       saveCompareCsv: root.getElementById('saveCompareCsv'),
       close: root.getElementById('close')
@@ -711,6 +919,12 @@
   function enableExportButtons() {
     ui.saveJson.disabled = !state.report;
     ui.saveCsv.disabled = !state.report;
+    const comparisonInputDisabled = state.report?.complete !== true;
+    ui.loadBaseline.disabled = comparisonInputDisabled;
+    ui.loadBaselineLabel.classList.toggle(
+      'disabled',
+      comparisonInputDisabled
+    );
     ui.saveCompareJson.disabled = !state.comparison;
     ui.saveCompareCsv.disabled = !state.comparison;
   }
@@ -769,27 +983,32 @@
     if (!file) return;
 
     try {
-      if (!state.report) return;
+      state.comparison = null;
 
-      const oldReport = JSON.parse(await file.text());
-
-      const oldList = Array.isArray(oldReport?.followers)
-        ? oldReport.followers
-        : Array.isArray(oldReport?.currentFollowers)
-          ? oldReport.currentFollowers
-          : null;
-
-      if (!oldList) {
-        throw new Error('旧文件中没有 followers 数组。');
+      if (!state.report) {
+        throw new Error('当前快照尚未生成，请等待读取结束后再导入旧快照。');
       }
 
-      const oldNormalized = uniqueByUid(
-        oldList
-          .map(normalizeFollower)
-          .filter(Boolean)
+      const currentSnapshot = validateSnapshotForComparison(
+        state.report,
+        '当前'
       );
 
-      const currentNormalized = uniqueByUid(state.report.followers);
+      const oldReport = JSON.parse(await file.text());
+      const oldSnapshot = validateSnapshotForComparison(
+        oldReport,
+        '旧'
+      );
+
+      if (oldSnapshot.targetUid !== currentSnapshot.targetUid) {
+        throw new Error(
+          `快照账号不一致：旧快照 UID ${oldSnapshot.targetUid}，` +
+          `当前快照 UID ${currentSnapshot.targetUid}。`
+        );
+      }
+
+      const oldNormalized = oldSnapshot.followers;
+      const currentNormalized = currentSnapshot.followers;
 
       const oldMap = new Map(
         oldNormalized.map((item) => [item.uid, item])
@@ -826,16 +1045,38 @@
 
       state.comparison = {
         reportType: 'bilibili-follower-snapshot-comparison',
+        reportVersion: 'public-comparison-2026-08-09-v1.1',
         generatedAt: new Date().toISOString(),
         targetUid: state.report.targetUid,
         targetName: state.report.targetName,
         previousFileName: file.name,
         previousGeneratedAt: oldReport.generatedAt ?? null,
         currentGeneratedAt: state.report.generatedAt,
+        previousComplete: oldReport.complete,
+        currentComplete: state.report.complete,
+        previousReportedTotal: oldSnapshot.reportedTotal,
+        currentReportedTotal: currentSnapshot.reportedTotal,
+        previousExportedUniqueTotal: oldSnapshot.exportedUniqueTotal,
+        currentExportedUniqueTotal: currentSnapshot.exportedUniqueTotal,
         previousFollowerCount: oldNormalized.length,
         currentFollowerCount: currentNormalized.length,
         removedCount: removed.length,
         addedCount: added.length,
+        confidence: 'high',
+        validity: {
+          valid: true,
+          rule: 'both-complete-same-target-exact-counts',
+          checks: {
+            bothComplete:
+              oldReport.complete === true && state.report.complete === true,
+            sameTargetUid:
+              oldSnapshot.targetUid === currentSnapshot.targetUid,
+            previousCountsExact:
+              oldNormalized.length === oldSnapshot.reportedTotal,
+            currentCountsExact:
+              currentNormalized.length === currentSnapshot.reportedTotal
+          }
+        },
         interpretation:
           'removed 表示关系已消失候选，可能包括主动取关、注销、封禁、拉黑、平台清理或被移除。',
         removed,
@@ -855,8 +1096,8 @@
     } catch (error) {
       state.comparison = null;
       enableExportButtons();
-      setStatus(`旧快照读取失败：${error.message}`, 'error');
-      log(`旧快照读取失败：${error.stack || error.message}`, 'error');
+      setStatus(`快照比较已停止：${error.message}`, 'error');
+      log(`快照比较已停止：${error.stack || error.message}`, 'error');
     } finally {
       input.value = '';
     }
@@ -1042,21 +1283,32 @@
         );
       }
 
+      const finalStatReportedTotal = state.finalStat?.follower ?? null;
       const finalReportedTotal =
-        state.finalStat?.follower ??
+        finalStatReportedTotal ??
         listEndpointReportedTotal ??
         initialTotal ??
         null;
 
-      const complete =
-        Number.isFinite(finalReportedTotal) &&
-        state.followers.length >= finalReportedTotal;
+      const completeness = evaluateSnapshotCompleteness({
+        initialReportedTotal: initialTotal,
+        listEndpointReportedTotal,
+        finalReportedTotal: finalStatReportedTotal,
+        exportedUniqueTotal: state.followers.length
+      });
+      const { complete, reportedTotalsConsistent } = completeness;
 
       const serviceDetailLimitLikelyReached =
         Number.isFinite(finalReportedTotal) &&
         finalReportedTotal > CONFIG.knownFollowerDetailLimit &&
         state.followers.length >= CONFIG.knownFollowerDetailLimit &&
         state.followers.length < finalReportedTotal;
+
+      if (!reportedTotalsConsistent) {
+        state.warnings.push(
+          '扫描前总数、名单接口总数和扫描后总数不一致，因此本次快照不具备比较资格。'
+        );
+      }
 
       if (serviceDetailLimitLikelyReached) {
         state.warnings.push(
@@ -1070,7 +1322,7 @@
 
       state.report = {
         reportType: 'bilibili-current-follower-snapshot',
-        reportVersion: 'public-2026-08-01-v1.1',
+        reportVersion: 'public-2026-08-09-v1.2',
         generatedAt: new Date().toISOString(),
         generatedAtLocal: new Date().toString(),
         targetUid: state.login.uid,
@@ -1081,6 +1333,7 @@
         knownFollowerDetailLimit: CONFIG.knownFollowerDetailLimit,
         serviceDetailLimitLikelyReached,
         exportedUniqueTotal: state.followers.length,
+        reportedTotalsConsistent,
         complete,
         pageSize: CONFIG.pageSize,
         endpointUsed: state.selectedEndpoint?.name ?? null,
@@ -1116,14 +1369,15 @@
           `读取结束：接口总数 ${finalReportedTotal}，` +
           `仅取得前 ${state.followers.length} 人。\n` +
           `B站当前粉丝明细接口的已知上限为 ${CONFIG.knownFollowerDetailLimit} 人，` +
-          `因此无法导出第 ${CONFIG.knownFollowerDetailLimit + 1} 名之后的账号明细。`,
+          `第 ${CONFIG.knownFollowerDetailLimit + 1} 名之后的账号明细未包含在本次快照中，` +
+          '旧快照比较已停用。',
           'warning'
         );
       } else {
         setStatus(
           `读取结束，但结果不完整：${state.followers.length}` +
           ` / ${finalReportedTotal ?? '未知总数'}。\n` +
-          '仍可保存用于分析，但不要宣称为完整名单。',
+          '仍可保存用于分析；旧快照比较已停用。',
           'warning'
         );
       }

@@ -5,10 +5,11 @@
 ## 当前基线
 
 - 分支：`test/mobile-endpoint-probe`。
-- 交付快照脚本 blob：`431d1b06996495670f553cc052433df626e7fcf9`。原始浏览器 JSON 没有嵌入 commit/blob 字段，因此接口实测与代码自动化分别取证。
+- 2026-08-03 浏览器证据对应的快照脚本 blob：`431d1b06996495670f553cc052433df626e7fcf9`。原始浏览器 JSON 没有嵌入 commit/blob 字段，因此接口实测与代码自动化分别取证。
 - 浏览器采集窗口：2026-08-02 18:18–18:37 UTC，即新加坡时间 2026-08-03 02:18–02:37。
 - 浏览器族：Chrome、Edge。原始证据没有记录精确版本号，因此公开摘要不补写版本号。
 - 公开脱敏报告：[`research/evidence/live-browser-evidence-2026-08-03.md`](./research/evidence/live-browser-evidence-2026-08-03.md)。
+- 2026-08-08 自有账号超过 1000 的快照：总数 1065、`/x/relation/fans` 唯一明细 1000、第 21 页空；其 JSON 未记录浏览器族。脱敏回归证据见 [`research/evidence/self-over-1000-evidence-2026-08-09.md`](./research/evidence/self-over-1000-evidence-2026-08-09.md)。
 
 后续代码变更应新建一轮证据，并在报告中写入新的完整 commit。不要把本报告的结果自动归到尚未测试的新提交。
 
@@ -67,7 +68,15 @@ GM_listValues
 
 新旧快照均完整时，集合差分可用于确认“该关系已不在当前名单”。主动取关、注销、封禁、拉黑、平台清理和手动移除仍共享同一种差分表现。
 
-文件输入回归重点：事件处理器在任何 `await` 前保存 `event.currentTarget`，异步流程结束后通过已保存的输入元素清空 `value`。对应测试文件是 `tests/file-input-handler-regression.test.mjs`。
+公开脚本只有在扫描前、名单接口、扫描后三个总数一致，且唯一 UID 数与该总数精确相等时才标记完整。当前快照不完整时，“导入旧快照”保持停用；代码触发的导入还会在差集前验证：
+
+1. 新旧双方均明确声明 `complete: true`；
+2. 目标 UID 相同；
+3. 粉丝 UID 均有效且没有重复；
+4. 报告总数、导出总数和唯一 UID 数精确一致；
+5. 兼容移动脚本快照时，其逐页总数和 `integrity` 声明也必须通过。
+
+任一检查不满足时清空旧比较结果、不生成新差集，并显示停止原因。文件输入生命周期仍要求事件处理器在任何 `await` 前保存 `event.currentTarget`，异步流程结束后通过已保存的输入元素清空 `value`。对应测试文件是 `tests/file-input-handler-regression.test.mjs`；严格完整性与按钮状态另由 `tests/snapshot-completeness-regression.test.mjs` 覆盖。
 
 ## 接口探测
 
@@ -152,16 +161,17 @@ GET https://member.bilibili.com/x/web/data/v2/fans/stat/graph?type={all_fans|fol
 | 创作中心 `fan` | HTTP 200 / code 0 | HTTP 200 / code 0 | `rank_list` 是互动/内容排行，不是完整粉丝名单 |
 | 约 142 万公开样本 `/followers` | 1000 后空 | 页 20 有 50、页 21 空 | 仅证明该公开样本在采集时点的行为 |
 | 同一公开样本 `/fans` 官方游标 | 100 后空，且为 `/followers` 前 100 子集 | 100 后空 | Chrome 交集 100、单边差集 0/900、Jaccard 0.1 |
-| 自有账号总数超过 1000 | 未覆盖 | 未覆盖 | 仍需真实自有样本 |
+| 自有账号总数 1065 的 `/fans` 普通分页 | 原始 JSON 未记录浏览器族 | 未形成独立 Edge 证据 | 唯一明细 1000，第 21 页空；直接复现不完整窗口进入旧版差集 |
 | Firefox Android + Tampermonkey | 未形成浏览器证据 | 不适用 | 仍需手机端安装、读取、导入和下载全流程记录 |
 
 ## 自动化检查
 
-2026-08-03 在合并当前分支修改后执行：
+2026-08-09 在合并本轮比较硬闸后执行：
 
 ```text
 node --check bilibili_follower_snapshot_public.js
 node --check userscript/bilibili-follower-mobile-test.user.js
+node --check userscript/bilibili-follower-endpoint-probe-mobile.user.js
 node --check research/bilibili_follower_endpoint_probe.js
 node --test tests/*.test.mjs
 git diff --check
@@ -182,8 +192,8 @@ SHA-256 b113b5ffeda52e22c3733339f440b9b340d4bbb1f924ca5fb079f0525b04e353
 
 ## 未完成点与下一轮证据要求
 
-1. 找到粉丝总数超过 1000 的自有测试账号，在 Chrome 与 Edge 各跑一次完整普通分页、官方游标和 rcmd 链。
-2. 对每条链记录完整 commit、UTC 时间、字面参数、HTTP/code、每页长度、新增数、累计唯一数、停止原因和集合 SHA-256。
+1. 在当前超过 1000 的自有账号上，用 Chrome 与 Edge 分别跑完整普通分页、官方游标和 rcmd 链；现有 1065/1000 JSON 只覆盖一次普通分页，且没有浏览器版本字段。
+2. 对每条链记录完整 commit、UTC 时间、浏览器版本、字面参数、HTTP/code、每页长度、新增数、累计唯一数、停止原因和集合 SHA-256。
 3. 若出现第 1001 个唯一 UID，单独保存页号、请求 offset、响应 offset 与集合证明；若停在 1000，也保留连续空页或无进展证据。
 4. 在 Firefox Android + Tampermonkey 完成安装、按钮显示、快照导出、旧快照导入、异常后再次选择同一文件、下载和页面内监测验证；同时覆盖 `space`/`www` 跨入口 GM 共享、pending 手动确认及 BFCache 恢复。
 5. 以不同日期重复公开大样本测试，区分接口规则与名单自然变化；跨日期集合哈希不同本身不表示实现回归。
@@ -197,7 +207,9 @@ SHA-256 b113b5ffeda52e22c3733339f440b9b340d4bbb1f924ca5fb079f0525b04e353
 - `research/bilibili_follower_endpoint_probe.js`：带手动启动、进度、取消、严格一致性、集合 SHA-256 和脱敏分享版的只读探测器。
 - `userscript/bilibili-follower-endpoint-probe-mobile.user.js`：v0.2.0-test 安装入口，覆盖个人空间、H5 新粉丝页和创作中心 `platform`。
 - `research/evidence/live-browser-evidence-2026-08-03.md`：公开脱敏证据摘要。
-- `tests/file-input-handler-regression.test.mjs`：文件输入生命周期回归。
+- `research/evidence/self-over-1000-evidence-2026-08-09.md`：自有账号 1065/1000 与旧版误比较的脱敏摘要。
+- `tests/file-input-handler-regression.test.mjs`：文件输入生命周期和比较硬闸回归。
+- `tests/snapshot-completeness-regression.test.mjs`：公开脚本严格完整性与导入状态回归。
 - `tests/endpoint-probe-v2.test.mjs`：接口探测器 v2 回归。
 - `tests/mobile-reliability.test.mjs`：移动脚本可靠性与监测回归。
 - `README.md`：公开说明与当前证据边界。
